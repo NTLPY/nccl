@@ -159,7 +159,7 @@ struct ncclProxySubArgs {
 
 struct ncclProxyArgs {
   struct ncclProxySubArgs subs[NCCL_PROXY_MAX_SUBS];
-  proxyProgressFunc_t progress;
+  proxyProgressFunc_t progress; ///< Function to call for progress
   int nsubs;
   int done;
   int onePPN;
@@ -241,11 +241,16 @@ struct ncclSharedNetComms {
 };
 
 struct ncclProxyPool;
+/**
+ * @brief State for the proxy progress thread.
+ * 
+ * This structure holds the state of the proxy progress thread, including the
+ */
 struct ncclProxyProgressState {
   // Used by main threads to send work to progress thread
   struct ncclProxyOpsPool* opsPool;
-  ncclShmHandle_t handle;
-  char opsPoolShmSuffix[6];
+  ncclShmHandle_t handle;   ///< Shared memory handle for the opsPool
+  char opsPoolShmSuffix[6]; ///< Suffix for the shared memory of opsPool
 
   pthread_t thread;
   volatile int stop;
@@ -335,7 +340,7 @@ struct ncclProxyState {
   struct ncclIpcSocket peerIpcSock; // cuMEM API support (UDS)
   uint64_t *peerAddressesUDS; // cuMem API support (UDS)
 
-  // Progress thread
+  // State for the proxy progress thread
   struct ncclProxyProgressState progressState;
 
   // Profiler plugin
@@ -358,7 +363,7 @@ struct ncclProxyConnection {
   int send, transport, shared;
   int tpLocalRank, sameProcess;
   struct ncclSocket* sock;
-  struct ncclTransportComm* tcomm;
+  struct ncclTransportComm* tcomm; ///< Transport communication
   struct ncclProxyArgs *proxyAppend;
   struct ncclProxyArgs **proxyAppendPtr;
   void* transportResources;

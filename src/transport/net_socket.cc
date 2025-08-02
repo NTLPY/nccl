@@ -175,6 +175,12 @@ struct ncclNetSocketRequest {
   void* inlineData;
   struct ncclSocket* ctrlSock;
   int offset;
+  /**
+   * Used to track the state of the request.
+   * - 0: not used
+   * - 1: trying to send/recv size (+ inline data if any)
+   * - 2: size exchanged, waiting for subtasks to complete
+   */
   int used;
   struct ncclNetSocketComm* comm;
   struct ncclNetSocketTask* tasks[MAX_SOCKETS];

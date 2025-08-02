@@ -741,6 +741,19 @@ static ncclResult_t removeOp(struct ncclProxyProgressState* state, struct ncclPr
   return ncclSuccess;
 }
 
+/**
+ * @internal
+ * @brief Progress all operations in the proxy state.
+ * 
+ * This function iterates through all operations in the proxy state, calling their progress functions.
+ * 
+ * @param[inout] proxyState Pointer to the proxy state containing operations to progress.
+ * @param[inout] state Pointer to the proxy progress state.
+ * @param[inout] opStart Pointer to the first operation to start progressing.
+ * @param[out] idle Pointer to an integer that will be updated to indicate if any operation is idle
+ * @return ncclResult_t indicating success or failure.
+ * @see removeOp
+ */
 static ncclResult_t progressOps(struct ncclProxyState* proxyState, struct ncclProxyProgressState* state, struct ncclProxyArgs* opStart, int* idle) {
   struct ncclProxyArgs* prevOp = NULL;
   struct ncclProxyArgs* op = opStart;
@@ -750,7 +763,7 @@ static ncclResult_t progressOps(struct ncclProxyState* proxyState, struct ncclPr
     ncclResult_t ret = op->progress(proxyState, op);
     if (op->idle) { TIME_STOP(1); TIME_CANCEL(0); } else { TIME_CANCEL(1); TIME_STOP(0); }
     *idle &= op->idle;
-    if (op->state == ncclProxyOpNone || ret != ncclSuccess) {
+    if (op->state == ncclProxyOpNone || ret != ncclSuccess) { // Finished
       TIME_START(2);
       NCCLCHECK(removeOp(state, &op, &prevOp));
       TIME_STOP(2);
@@ -855,14 +868,29 @@ process_nextops:
 
 #include <signal.h>
 static ncclProxyProgressState* ncclLastProxyState;
+/**
+ * @internal
+ * @brief Dump the current state of the proxy operations.
+ *
+ * This function prints the current state of the proxy operations, including all active operations and their details.
+ *
+ * @param[in] signal Signal number that triggered the dump (not used).
+ */
 void ncclDumpProxyState(int signal) {
   dumpProxyState(ncclLastProxyState);
 }
 
 NCCL_PARAM(CreateThreadContext, "CREATE_THREAD_CONTEXT", 0);
+/**
+ * @internal
+ * @brief Set the CUDA context for the proxy thread.
+ *
+ * @param[inout] proxyState Pointer to the proxy state structure.
+ * @return 1 if the context was set successfully, 0 if it was not needed or failed.
+ */
 static int setProxyThreadContext(struct ncclProxyState* proxyState) {
 #if CUDART_VERSION >= 11030
-  static int createThreadContext = -1;
+  static int createThreadContext = -1; // -1: not initialized, 0: disabled, 1: enabled
 
   if (createThreadContext == -1) {
     createThreadContext = ncclParamCreateThreadContext();
@@ -901,6 +929,8 @@ NCCL_PARAM(ProgressAppendOpFreq, "PROGRESS_APPENDOP_FREQ", 8);
 
 void* ncclProxyProgress(void *proxyState_) {
   struct ncclProxyState* proxyState = (struct ncclProxyState*)proxyState_;
+
+  // Set the CUDA context for the proxy thread if needed
   if (setProxyThreadContext(proxyState)) {
     INFO(NCCL_INIT, "[Proxy Progress] Set CUDA context on device %d", proxyState->cudaDev);
   } else if (cudaSetDevice(proxyState->cudaDev) != cudaSuccess) {
@@ -912,9 +942,13 @@ void* ncclProxyProgress(void *proxyState_) {
 
   struct ncclProxyProgressState* state = &proxyState->progressState;
   state->nextOps = -1;
+
+  // Set the signal handler for dumping proxy state
   const int sig = ncclParamProxyDumpSignal();
   if (sig != -1) signal(sig, ncclDumpProxyState);
   ncclLastProxyState = state;
+
+  // Set the thread name for profiling and debugging
   char threadName[NCCL_THREAD_NAMELEN];
   snprintf(threadName, NCCL_THREAD_NAMELEN, "NCCL Progress%2d", proxyState->cudaDev);
   nvtxNameOsThreadA(syscall(SYS_gettid), threadName);
@@ -976,6 +1010,17 @@ ncclResult_t ncclProxyStart(struct ncclComm* comm) {
   return ncclSuccess;
 }
 
+/**
+ * @internal
+ * @brief Create the proxy progress thread if it does not already exist.
+ *
+ * Create the proxy progress thread with name "NCCL Progress%2d" where %2d is
+ * the local rank of the proxy.
+ * 
+ * @param[inout] proxyState Pointer to the proxy state structure.
+ * @return ncclResult_t indicating success or failure.
+ * @see ncclProxyProgress, ncclProxyProgressDestroy
+ */
 static ncclResult_t ncclProxyProgressCreate(struct ncclProxyState* proxyState) {
   struct ncclProxyProgressState* state = &proxyState->progressState;
   if (!state->thread) {
@@ -985,6 +1030,16 @@ static ncclResult_t ncclProxyProgressCreate(struct ncclProxyState* proxyState) {
   return ncclSuccess;
 }
 
+/**
+ * @internal
+ * @brief Destroy the proxy progress thread and clean up resources.
+ *
+ * This function stops the proxy progress thread, waits for it to finish,
+ * and frees any allocated memory for proxy argument pools.
+ * 
+ * @param[inout] proxyState Pointer to the proxy state structure.
+ * @return ncclResult_t indicating success or failure.
+ */
 ncclResult_t ncclProxyProgressDestroy(struct ncclProxyState* proxyState) {
   struct ncclProxyProgressState* state = &proxyState->progressState;
 
@@ -1325,6 +1380,18 @@ fail:
   goto exit;
 }
 
+/**
+ * @internal
+ * @brief Initialize the proxy progress state and create the progress thread if needed.
+ * 
+ * This function initializes the proxy progress state, allocates shared memory
+ * for the operations pool, and starts the proxy progress thread if it is not
+ * already running.
+ * 
+ * @param[inout] proxyState Pointer to the proxy state structure.
+ * @return ncclResult_t indicating success or failure.
+ * @see ncclProxyProgressCreate, proxyProgressInit
+ */
 static ncclResult_t proxyProgressInit(struct ncclProxyState* proxyState) {
   struct ncclProxyProgressState* state = &proxyState->progressState;
   if (state->opsPool == NULL) {

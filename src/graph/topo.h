@@ -214,6 +214,16 @@ static ncclResult_t ncclTopoIdToIndex(struct ncclTopoSystem* system, int type, i
   return ncclInternalError;
 }
 
+/**
+ * @internal
+ * @brief Find index of GPU with given rank in the system.
+ *
+ * @param system The topology system.
+ * @param rank The rank.
+ * @param index Pointer to store the index of the GPU.
+ * @param showWarn If true, show a warning if the rank is not found.
+ * @return ncclResult_t Returns ncclSuccess if found, otherwise ncclInternalError
+ */
 static ncclResult_t ncclTopoRankToIndex(struct ncclTopoSystem* system, int rank, int* index, bool showWarn) {
   *index = -1;
   for (int i=0; i<system->nodes[GPU].count; i++) {

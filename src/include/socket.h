@@ -54,15 +54,15 @@ enum ncclSocketType {
 struct ncclSocket {
   int fd;
   int acceptFd;
-  int errorRetries;
+  int errorRetries; ///< Number of retries on error.
   union ncclSocketAddress addr;
   volatile uint32_t* abortFlag;
   int asyncFlag;
-  enum ncclSocketState state;
+  enum ncclSocketState state; ///< Current state of the socket.
   int salen;
   uint64_t magic;
   enum ncclSocketType type;
-  int customRetry;
+  int customRetry; ///< Do not use retry provided by this socket.
   int finalizeCounter; // Used to keep track of initial handshake for async sockets.
   char finalizeBuffer[sizeof(uint64_t)]; // Used to keep track of initial handshake for async sockets.
 };

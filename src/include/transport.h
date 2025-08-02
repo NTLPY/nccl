@@ -41,7 +41,9 @@ struct ncclPeerInfo {
   int cudaDev;
   int nvmlDev;
   int gdrSupport;
+  ///< Hash to identify the host
   uint64_t hostHash;
+  ///< Hash to identify the process
   uint64_t pidHash;
   dev_t shmDev;
   int64_t busId;
@@ -115,8 +117,11 @@ struct ncclTransportComm {
   ncclResult_t (*proxyDeregister)(struct ncclProxyConnection* connection, struct ncclProxyState* proxyState, void* reqBuff, int reqSize, int* done);
 };
 
+///< Interface for transport implementations
 struct ncclTransport {
+  ///< Transport type
   const char name[8];
+  ///< Determines if the connection can be established
   ncclResult_t (*canConnect)(int*, struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo*, struct ncclPeerInfo*);
   struct ncclTransportComm send;
   struct ncclTransportComm recv;

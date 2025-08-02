@@ -257,7 +257,7 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
   // This outer loop iterates over cliques of comms which are siblings of the
   // same global entity. We calculate a clique as all comms which have the same
   // `intraComm0` value.
-  do {
+  do { // For each clique
     struct ncclComm* comm = cliqueHead;
     bool capturingYes = false, capturingNo = false;
     do {

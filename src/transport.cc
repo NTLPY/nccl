@@ -19,6 +19,23 @@ struct ncclTransport* ncclTransports[NTRANSPORTS+1] = {
   &profilerTransport // Not really used for transport, only to create proxy ops polling on profiler counters.
 };
 
+/**
+ * @internal
+ * @brief Setup a transport for a given connector.
+ *
+ * This function selects and setup a appropriate transport for a given connector.
+ *
+ * @tparam type The type of connector (1 for send, 0 for recv).
+ * @param comm The NCCL communicator.
+ * @param graph The topology graph for the communicator.
+ * @param connect The data for connect.
+ * @param channelId The channel ID.
+ * @param peer The peer rank.
+ * @param connIndex The connector index.
+ * @param[out] transportType The transport type selected.
+ *
+ * @return ncclResult_t Returns ncclSuccess on success, or an error code on failure.
+ */
 template <int type>
 static ncclResult_t selectTransport(struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclConnect* connect, int channelId, int peer, int connIndex, int* transportType) {
   struct ncclPeerInfo* myInfo = comm->peerInfo+comm->rank;
@@ -135,6 +152,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
     // The next M entries contain sendData, connection information for send connections
     // It's not guaranteed that each entry of data has the same number of total or send/recv specific connections
     int p = i-(done+1);
+    // Ensure that we have enough space for the data
     if (recvMask || sendMask) {
       if (data[p] == NULL) NCCLCHECKGOTO(ncclCalloc(data + p, 2 * MAXCHANNELS), ret, fail);
       else memset(data[p], 0, 2 * MAXCHANNELS * sizeof(struct ncclConnect));

@@ -16,6 +16,12 @@
 
 NCCL_PARAM(RetryCnt, "SOCKET_RETRY_CNT", 34);
 NCCL_PARAM(RetryTimeOut, "SOCKET_RETRY_SLEEP_MSEC", 100);
+/**
+ * @internal
+ * Sleep for a given time in milliseconds.
+ *
+ * @param time_msec Time to sleep in milliseconds.
+ */
 static void msleep(unsigned int time_msec) {
   const long c_1e6 = 1e6;
   struct timespec tv = (struct timespec){
@@ -25,6 +31,31 @@ static void msleep(unsigned int time_msec) {
   nanosleep(&tv, NULL);
 }
 
+/**
+ * @internal
+ * @brief Progress a socket operation (send/recv) with optional blocking.
+ * 
+ * This function attempts to send or receive data on a socket, handling
+ * errors and retries as necessary. It can operate in both blocking and
+ * non-blocking modes.
+ * 
+ * For close, remote error or abort, function return immediately.
+ * For blocking operations on blocking sockets, it will continue to attempt
+ * the operation until its finished, a interruption occurs.
+ * For non-blocking operations on blocking sockets, it will continue to attempt
+ * the operation until its finished, buffer overflow or a interruption occurs.
+ * For non-blocking operations on non-blocking sockets, it will return
+ * immediately.
+ * 
+ * @param[in] op Operation type (NCCL_SOCKET_SEND or NCCL_SOCKET_RECV).
+ * @param[inout] sock Pointer to the socket structure.
+ * @param[inout] ptr Pointer to the data buffer.
+ * @param[in] size Size of the data buffer.
+ * @param[inout] offset Pointer to the current offset in the data buffer.
+ * @param[in] block Whether to block until the operation completes.
+ * @param[out] closed Pointer to an integer that will be set to 1 if the connection is closed.
+ * @return ncclResult_t indicating success or failure.
+ */
 static ncclResult_t socketProgressOpt(int op, struct ncclSocket* sock, void* ptr, int size, int* offset, int block, int* closed) {
   int bytes = 0;
   *closed = 0;
@@ -46,7 +77,7 @@ static ncclResult_t socketProgressOpt(int op, struct ncclSocket* sock, void* ptr
         WARN("socketProgressOpt: Call to %s %s failed : %s", (op == NCCL_SOCKET_RECV ? "recv from" : "send to"),
              ncclSocketToString(&sock->addr, line), strerror(errno));
         return ncclRemoteError;
-      } else {
+      } else { // EINTR | EWOULDBLOCK | EAGAIN
         bytes = 0;
       }
     }
@@ -56,9 +87,25 @@ static ncclResult_t socketProgressOpt(int op, struct ncclSocket* sock, void* ptr
       return ncclInternalError;
     }
   } while (sock->asyncFlag == 0 && bytes > 0 && (*offset) < size);
+  // When blocking, !(EINTR | EWOULDBLOCK | EAGAIN) and not done yet
   return ncclSuccess;
 }
 
+/**
+ * @internal
+ * @brief Progress a non-blocking socket operation (send/recv) and handle connection closure.
+ * 
+ * pclose will be set to 1 if the connection is closed by the remote peer.
+ * 
+ * @param[in] op Operation type (NCCL_SOCKET_SEND or NCCL_SOCKET_RECV).
+ * @param[inout] sock Pointer to the socket structure.
+ * @param[inout] ptr Pointer to the data buffer.
+ * @param[in] size Size of the data buffer.
+ * @param[inout] offset Pointer to the current offset in the data buffer.
+ * @param[out] pclosed Pointer to an integer that will be set to 1 if the connection is closed, optional.
+ * @return ncclResult_t indicating success or failure.
+ * @see socketProgressOpt
+ */
 static ncclResult_t socketProgress(int op, struct ncclSocket* sock, void* ptr, int size, int* offset, int* pclosed = NULL) {
   int closed;
   NCCLCHECK(socketProgressOpt(op, sock, ptr, size, offset, 0 /*block*/, &closed));
@@ -76,6 +123,20 @@ static ncclResult_t socketProgress(int op, struct ncclSocket* sock, void* ptr, i
   return ncclSuccess;
 }
 
+/**
+ * @internal
+ * @brief Wait for a socket operation to complete.
+ * 
+ * This function blocks until the entire data buffer has been sent or received or an error occurs.
+ * 
+ * @param[in] op Operation type (NCCL_SOCKET_SEND or NCCL_SOCKET_RECV).
+ * @param[inout] sock Pointer to the socket structure.
+ * @param[inout] ptr Pointer to the data buffer.
+ * @param[in] size Size of the data buffer.
+ * @param[inout] offset Pointer to the current offset in the data buffer.
+ * @return ncclResult_t indicating success or failure.
+ * @see socketProgress
+ */
 static ncclResult_t socketWait(int op, struct ncclSocket* sock, void* ptr, int size, int* offset) {
   while (*offset < size)
     NCCLCHECK(socketProgress(op, sock, ptr, size, offset));
@@ -459,6 +520,17 @@ static ncclResult_t socketTryAccept(struct ncclSocket* sock) {
 NCCL_PARAM(SocketMaxRecvBuff, "SOCKET_RCVBUF", -1);
 NCCL_PARAM(SocketMaxSendBuff, "SOCKET_SNDBUF", -1);
 
+/**
+ * @internal
+ * @brief Set socket options.
+ *
+ * - Set socket non-blocking mode if async or abort flag is set.
+ * - Set TCP_NODELAY option to disable Nagle's algorithm.
+ * - Set send and receive buffer sizes.
+ *
+ * @param[inout] sock Pointer to the socket structure.
+ * @return ncclResult_t indicating success or failure (ncclSuccess, ncclSystemError).
+ */
 static ncclResult_t socketSetFlags(struct ncclSocket* sock) {
   const int one = 1;
   /* Set socket as non-blocking if async or if we need to be able to abort */
@@ -541,6 +613,21 @@ static ncclResult_t socketFinalizeAccept(struct ncclSocket* sock) {
   return ncclSuccess;
 }
 
+/**
+ * @internal
+ * @brief Reset the file descriptor of a socket.
+ *
+ * This function creates a new socket file descriptor, and if the existing
+ * socket file descriptor is valid, it duplicates the new file descriptor
+ * to the existing one, effectively reusing the file descriptor number.
+ *
+ * It also sets the socket options.
+ *
+ * @param[out] sock Pointer to the socket structure to reset.
+ * @return ncclResult_t indicating success or failure (ncclSuccess, ncclSystemError).
+ *
+ * @see socketSetFlags
+ */
 static ncclResult_t socketResetFd(struct ncclSocket* sock) {
   ncclResult_t ret = ncclSuccess;
   int fd = -1;
@@ -563,6 +650,25 @@ cleanup:
   goto exit;
 }
 
+/**
+ * @internal
+ * @brief Check the result of a socket connect operation.
+ *
+ * This function checks the result of a socket connect operation and updates
+ * the state of the socket accordingly. It handles various error codes and
+ * retries based on the configured retry count and timeout.
+ *
+ * Next state:
+ * - ncclSocketStateConnected: Successfully connected.
+ * - ncclSocketStateConnectPolling: Connection is in progress (EINPROGRESS).
+ * - ncclSocketStateConnecting: Connection is retrying due to transient errors.
+ * - ncclSocketStateError: Connection failed with a non-recoverable error.
+ *
+ * @param[inout] sock Pointer to the socket structure.
+ * @param[in] errCode The error code returned by the connect operation.
+ * @param[in] funcName The name of the function calling this check, for logging purposes.
+ * @return ncclResult_t indicating success or failure.
+ */
 static ncclResult_t socketConnectCheck(struct ncclSocket* sock, int errCode, const char funcName[]) {
   char line[SOCKET_NAME_MAXLEN+1];
   if (errCode == 0) {
@@ -594,12 +700,32 @@ static ncclResult_t socketConnectCheck(struct ncclSocket* sock, int errCode, con
   return ncclSuccess;
 }
 
+/**
+ * @internal
+ * @brief Start a connect operation on a socket.
+ *
+ * This function initiates a blocking or non-blocking connect operation
+ *
+ * @param[inout] sock Pointer to the socket structure.
+ * @return ncclResult_t indicating success or failure.
+ * @see socketConnectCheck
+ */
 static ncclResult_t socketStartConnect(struct ncclSocket* sock) {
   /* blocking/non-blocking connect() is determined by asyncFlag. */
   int ret = connect(sock->fd, &sock->addr.sa, sock->salen);
   return socketConnectCheck(sock, (ret == -1) ? errno : 0, __func__);
 }
 
+/**
+ * @internal
+ * @brief (Non-blocking) Poll for a connection on a socket.
+ *
+ * This function polls the socket to check if the connection has been established.
+ *
+ * @param[inout] sock Pointer to the socket structure.
+ * @return ncclResult_t indicating success or failure.
+ * @see socketConnectCheck
+ */
 static ncclResult_t socketPollConnect(struct ncclSocket* sock) {
   struct pollfd pfd;
   int timeout = 1, ret;
@@ -721,6 +847,7 @@ ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
       (sock->state == ncclSocketStateConnecting ||
        sock->state == ncclSocketStateConnectPolling ||
        sock->state == ncclSocketStateConnected));
+  // When blocking and not aborted and in a connected state, finalize the connection
 
   if (sock->abortFlag && __atomic_load_n(sock->abortFlag, __ATOMIC_ACQUIRE)) return ncclInternalError;
 
@@ -790,6 +917,22 @@ exit:
   return ret;
 }
 
+/**
+ * @brief Initialize a socket structure.
+ *
+ * @param[out] sock Pointer to the socket structure to initialize.
+ * @param[in] addr Pointer to the socket address structure.
+ * @param[in] magic Magic number to identify the socket.
+ * @param[in] type Type of the socket.
+ * @param[in] abortFlag Pointer to the abort flag.
+ * @param[in] asyncFlag Flag indicating if the socket is asynchronous.
+ * @param[in] customRetry Do not use retry provided by this socket.
+ * @return ncclResult_t indicating success or failure.
+ *
+ * @internal
+ * @see socketResetFd
+ * @endinternal
+ */
 ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddress* addr, uint64_t magic, enum ncclSocketType type, volatile uint32_t* abortFlag, int asyncFlag, int customRetry) {
   ncclResult_t ret = ncclSuccess;
 
@@ -841,6 +984,24 @@ ncclResult_t ncclSocketProgress(int op, struct ncclSocket* sock, void* ptr, int 
   return ncclSuccess;
 }
 
+/**
+ * @brief Send and wait for a socket operation to complete.
+ *
+ * This function waits for a socket operation (send or receive) to complete or an error to occur.
+ * An offset is used to track the final progress of the operation.
+ * 
+ * @bug This function does not check state of socket.
+ *
+ * @param[in] op Operation type (NCCL_SOCKET_SEND or NCCL_SOCKET_RECV).
+ * @param[inout] sock Pointer to the socket structure.
+ * @param[inout] ptr Pointer to the data buffer.
+ * @param[in] size Size of the data buffer.
+ * @param[inout] offset Pointer to the offset in the data buffer.
+ * @return ncclResult_t indicating success or failure.
+ * @internal
+ * @see socketWait
+ * @endinternal
+ */
 ncclResult_t ncclSocketWait(int op, struct ncclSocket* sock, void* ptr, int size, int* offset) {
   if (sock == NULL) {
     WARN("ncclSocketWait: pass NULL socket");
@@ -850,6 +1011,20 @@ ncclResult_t ncclSocketWait(int op, struct ncclSocket* sock, void* ptr, int size
   return ncclSuccess;
 }
 
+/**
+ * @brief Send and wait for the operation to complete.
+ *
+ * This function waits for a send operation to complete or an error to occur.
+ *
+ * @param[inout] sock Pointer to the socket structure.
+ * @param[inout] ptr Pointer to the data buffer.
+ * @param[in] size Size of the data buffer.
+ * @return ncclResult_t indicating success or failure.
+ * @see ncclSocketWait
+ * @internal
+ * @see socketWait
+ * @endinternal
+ */
 ncclResult_t ncclSocketSend(struct ncclSocket* sock, void* ptr, int size) {
   int offset = 0;
   if (sock == NULL) {
@@ -864,6 +1039,20 @@ ncclResult_t ncclSocketSend(struct ncclSocket* sock, void* ptr, int size) {
   return ncclSuccess;
 }
 
+/**
+ * @brief Receive and wait for the operation to complete.
+ *
+ * This function waits for a receive operation to complete or an error to occur.
+ *
+ * @param[inout] sock Pointer to the socket structure.
+ * @param[inout] ptr Pointer to the data buffer.
+ * @param[in] size Size of the data buffer.
+ * @return ncclResult_t indicating success or failure.
+ * @see ncclSocketWait
+ * @internal
+ * @see socketWait
+ * @endinternal
+ */
 ncclResult_t ncclSocketRecv(struct ncclSocket* sock, void* ptr, int size) {
   int offset = 0;
   if (sock == NULL) {
@@ -878,6 +1067,25 @@ ncclResult_t ncclSocketRecv(struct ncclSocket* sock, void* ptr, int size) {
   return ncclSuccess;
 }
 
+/**
+ * @brief Send and receive and wait for both operation to complete.
+ *
+ * This function waits for a send and a receive operation to complete or an error to occur.
+ *
+ * @param[in] sendSock Pointer to the socket structure for sending.
+ * @param[in] sendPtr Pointer to the data buffer for sending.
+ * @param[in] sendSize Size of the data buffer for sending.
+ * @param[in] recvSock Pointer to the socket structure for receiving.
+ * @param[in] recvPtr Pointer to the data buffer for receiving.
+ * @param[in] recvSize Size of the data buffer for receiving.
+ * @return ncclResult_t indicating success or failure.
+ *
+ * @note This function is more efficient than two calls to ncclSocketSend and ncclSocketRecv.
+ *
+ * @internal
+ * @see socketProgress
+ * @endinternal
+ */
 ncclResult_t ncclSocketSendRecv(struct ncclSocket* sendSock, void* sendPtr, int sendSize, struct ncclSocket* recvSock, void* recvPtr, int recvSize) {
   int sendOffset = 0, recvOffset = 0;
   if (sendSock == NULL || recvSock == NULL) {

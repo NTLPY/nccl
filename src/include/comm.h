@@ -365,7 +365,8 @@ struct ncclKernelPlanner {
 
   // The list of user streams aggregated over all tasks present.
   struct ncclCudaStreamList* streams;
-  // The most recent user stream. Ignored if streams==nullptr
+  // The most recent user stream. Ignored if streams==nullptr. Use as a cached when
+  // inserting new streams (See taskAppend@enqueue.cc).
   cudaStream_t streamRecent;
   // The graph capturing all user streams or invalid if none. Thus we restrict the
   // user that all streams must be captured in the same graph or not captured
@@ -429,12 +430,14 @@ struct ncclComm {
   int* topParentRanks;
   int* topParentLocalRanks;
   struct ncclChannel channels[MAXCHANNELS];
+  ///< Information about peers
   struct ncclPeerInfo* peerInfo;
   struct ncclTopoSystem* topo;
   struct ncclProxyConnector* gproxyConn;
   struct ncclIntruQueue<struct ncclCommCallback, &ncclCommCallback::next> legacyRegCleanupQueue;
   bool peerInfoValid;
 
+  ///< Underline network plugin
   ncclNet_t* ncclNet;
   int netPluginIndex;
   int ncclNetVer;
@@ -544,8 +547,8 @@ struct ncclComm {
   // Intra-process sync
   struct ncclComm* intraComm0; // leader of intra-process comms (self possible)
   struct ncclComm* intraNext; // next of intra-process comms, intraComm0 is head
-  int intraRank;
-  int intraRanks;
+  int intraRank; ///< Local rank of intra-process comms
+  int intraRanks; ///< Number of ranks of intra-process comms
   uint32_t intraBarrierPhase;
   char intraPad1[64 - sizeof(uint64_t)];
   uint64_t intraBarrierCounter; // only used if this is intraComm0
