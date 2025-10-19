@@ -318,6 +318,10 @@ static bool matchGidAddrPrefix(sa_family_t af, void* prefix, int prefixlen, unio
   return (prefixlen == 0) ? true : false;
 }
 
+/**
+ * @internal
+ * Check if the GID is configured.
+ */
 static bool configuredGid(union ibv_gid* gid) {
   const struct in6_addr *a = (struct in6_addr *)gid->raw;
   int trailer = (a->s6_addr32[1] | a->s6_addr32[2] | a->s6_addr32[3]);
@@ -327,6 +331,10 @@ static bool configuredGid(union ibv_gid* gid) {
   return true;
 }
 
+/**
+ * @internal
+ * Check if the GID is a link-local address.
+ */
 static bool linkLocalGid(union ibv_gid* gid) {
   const struct in6_addr *a = (struct in6_addr *)gid->raw;
   if (a->s6_addr32[0] == htonl(0xfe800000) && a->s6_addr32[1] == 0UL) {
@@ -335,10 +343,27 @@ static bool linkLocalGid(union ibv_gid* gid) {
   return false;
 }
 
+/**
+ * @internal
+ * Check if the GID is valid for communication.
+ *
+ * @see configuredGid
+ * @see linkLocalGid
+ */
 static bool validGid(union ibv_gid* gid) {
   return (configuredGid(gid) && !linkLocalGid(gid));
 }
 
+/**
+ * @internal
+ * Check GID type.
+ *
+ * @param[in] deviceName The name of the device.
+ * @param[in] portNum The port number.
+ * @param[in] gidIndex The index of the GID.
+ * @param[out] version Pointer to store the RoCE version number, 1 for RoCE v1, 2 for RoCE v2.
+ * @return ncclSuccess if the GID is valid, ncclSystemError if an error occurs.
+ */
 static ncclResult_t ncclIbRoceGetVersionNum(const char* deviceName, int portNum, int gidIndex, int* version) {
   char gidRoceVerStr[16] = { 0 };
   char roceTypePath[PATH_MAX] = { 0 };
